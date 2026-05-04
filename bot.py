@@ -4,8 +4,8 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from google.genai import types
 
-BOT_TOKEN = "8707015405:AAHnh_3QRYtD66hW1Pjas2uooycoO3pSu1A"
-GEMINI_API_KEY = "AIzaSyDnbHuABWDUBpen3O5QUs61bSFNX9K5a6w"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
