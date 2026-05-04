@@ -1,6 +1,7 @@
 import asyncio
 import os
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from google import genai
@@ -88,6 +89,23 @@ async def send_long_message(message: Message, text: str):
         await message.answer(text[i:i + 4000])
 
 
+async def handle(request):
+    return web.Response(text="Bot is running")
+
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle)
+
+    port = int(os.getenv("PORT", 10000))
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+
 @dp.message(F.text == "/start")
 async def start(message: Message):
     await message.answer(
@@ -124,14 +142,13 @@ async def solve_photo(message: Message):
         )
 
         answer = response.text or "Не получилось распознать задачу."
-
         user_context[message.from_user.id] = answer
 
         await send_long_message(message, answer)
 
     except Exception as e:
         await message.answer(
-            "Ошибка при решении задачи. Проверь ключ Gemini, деплой Render или качество фото."
+            "Ошибка при решении задачи. Проверь ключ Gemini, Render или качество фото."
         )
         print("ERROR:", e)
 
@@ -186,6 +203,7 @@ async def ask_about_solution(message: Message):
 
 async def main():
     print("Бот запущен")
+    await start_web_server()
     await dp.start_polling(bot)
 
 
