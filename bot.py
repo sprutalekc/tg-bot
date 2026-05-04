@@ -72,7 +72,7 @@ SYSTEM_PROMPT = """
 
 async def send_long_message(message: Message, text: str):
     if not text:
-        await message.answer("Не получилось получить ответ.")
+        await message.answer("Не получилось ответить")
         return
 
     for i in range(0, len(text), 4000):
@@ -126,12 +126,12 @@ async def help_command(message: Message):
 @dp.message(F.text == "/clear")
 async def clear_context(message: Message):
     user_context.pop(message.from_user.id, None)
-    await message.answer("Контекст очищен. Можешь отправлять новую задачу.")
+    await message.answer("Контекст очищен. Можешь отправлять новую задачу")
 
 
 @dp.message(F.photo)
 async def solve_photo(message: Message):
-    await message.answer("Принял. Считаю...")
+    await message.answer("Принял, считаю...")
 
     try:
         photo = message.photo[-1]
@@ -164,19 +164,19 @@ async def solve_photo(message: Message):
         print("ERROR:", error_text)
 
         if "API key" in error_text or "expired" in error_text:
-            await message.answer("Проблема с Gemini API key. Нужно обновить ключ в Render.")
+            await message.answer("Проблема с API key. Нужно обновить ключ в Render.")
 
         elif "location" in error_text:
-            await message.answer("Gemini недоступен из региона сервера. Проверь Render-регион или API.")
+            await message.answer("Проверь Render-регион или API.")
 
         elif "quota" in error_text or "429" in error_text:
-            await message.answer("Лимит Gemini закончился. Попробуй позже.")
+            await message.answer("Попробуй позже")
 
         elif "image" in error_text or "mime" in error_text:
-            await message.answer("Не получилось прочитать изображение. Попробуй отправить фото ещё раз.")
+            await message.answer("Не получилось прочитать изображение. Попробуй отправить фото ещё раз")
 
         else:
-            await message.answer("Что-то пошло не так. Попробуй ещё раз или отправь фото получше.")
+            await message.answer("Что-то пошло не так. Попробуй ещё раз или отправь фото получше")
 
 
 @dp.message(F.text)
@@ -184,7 +184,7 @@ async def ask_about_solution(message: Message):
     user_id = message.from_user.id
 
     if user_id not in user_context:
-        await message.answer("Сначала отправь фото задачи, потом спрашивай по решению.")
+        await message.answer("Сначала отправь фото задачи, потом спрашивай по решению")
         return
 
     await message.answer("Сейчас разберём.")
@@ -217,7 +217,7 @@ async def ask_about_solution(message: Message):
             ],
         )
 
-        answer = response.text or "Не получилось ответить на вопрос."
+        answer = response.text or "Не получилось ответить на вопрос"
 
         user_context[user_id] += (
             f"\n\nВопрос пользователя: {message.text}\nОтвет: {answer}"
@@ -227,7 +227,7 @@ async def ask_about_solution(message: Message):
 
     except Exception as e:
         print("ERROR:", str(e))
-        await message.answer("Ошибка при ответе на вопрос. Попробуй сформулировать иначе.")
+        await message.answer("Попробуй сформулировать иначе")
 
 
 async def main():
