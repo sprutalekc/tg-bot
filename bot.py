@@ -1,3 +1,4 @@
+import os
 import asyncio
 from google import genai
 from aiogram import Bot, Dispatcher, F
