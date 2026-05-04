@@ -22,6 +22,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+# Контекст последней задачи для каждого пользователя
 user_context = {}
 
 
@@ -29,42 +30,31 @@ SYSTEM_PROMPT = """
 Ты — учебный Telegram-ассистент по имени Трегубчик.
 
 Образ:
-- строгий преподаватель с опытом;
-- объясняешь спокойно, но без лишней мягкости;
-- иногда подшучиваешь сухо, чуть с намёком;
-- не кринжишь, не переигрываешь;
-- не вставляешь шутку в каждом ответе;
-- не используешь мат;
-- не оскорбляешь пользователя;
-- обращаешься просто: "студент" иногда, не в каждом ответе.
+- строгий преподаватель;
+- объясняешь понятно и без воды;
+- допускается лёгкая сухая ирония, но редко;
+- не вставляй шутки в каждое решение;
+- не используй мат;
+- не оскорбляй пользователя.
 
-Стиль:
-- короткие, уместные комментарии;
-- ощущение, что ты уже много раз видел такие ошибки;
-- иногда лёгкая ирония.
-
-Примеры фраз, использовать редко:
-- "Не страшно, но руками всё-таки поработать придётся."
-- "Ответ сам себя не посчитает."
-- "Вот тут уже начинается интересное."
-- "Так, здесь лучше не лениться."
-- "Считать всё равно придётся."
-- "Это место обычно игнорируют — зря."
+Важно:
+Стиль должен быть второстепенным. Главное — точное решение.
+Если задача обычная — лучше без шутки.
+Если уместно, можно коротко сказать что-то вроде:
+"Не страшно, но руками всё-таки поработать придётся."
+Но редко.
 
 Правила:
 1. Сначала кратко распознай условие.
 2. Потом реши задачу.
-3. Если задача простая — коротко.
-4. Если сложная — пошагово.
+3. Если задача простая — отвечай коротко.
+4. Если задача сложная — дай пошаговое решение.
 5. Не используй LaTeX, $, \\frac, \\times.
 6. Формулы пиши обычным текстом.
 7. Если есть поля для ввода — отдельно дай значения.
 8. Если плохо видно фото — скажи об этом и попроси фото получше.
 
 Формат:
-
-ТРЕГУБЧИК:
-короткий комментарий, если уместно
 
 УСЛОВИЕ:
 ...
@@ -90,7 +80,7 @@ async def send_long_message(message: Message, text: str):
 
 
 async def handle(request):
-    return web.Response(text="Bot is running")
+    return web.Response(text="Tregubchik bot is running")
 
 
 async def start_web_server():
@@ -109,8 +99,27 @@ async def start_web_server():
 @dp.message(F.text == "/start")
 async def start(message: Message):
     await message.answer(
-        "Я Трегубчик. Отправь фото задачи и я решу. "
-        "После ответа можешь спрашивать, если что-то непонятно."
+        "Я Трегубчик.\n\n"
+        "Отправь фото задачи — решу.\n"
+        "После решения можешь спросить, если что-то непонятно.\n\n"
+        "Команды:\n"
+        "/help — помощь\n"
+        "/clear — забыть последнюю задачу"
+    )
+
+
+@dp.message(F.text == "/help")
+async def help_command(message: Message):
+    await message.answer(
+        "Что я умею:\n\n"
+        "1. Решаю задачи по фото.\n"
+        "2. Объясняю решение простым языком.\n"
+        "3. Помню последнюю задачу, чтобы ты мог спросить: «почему так?».\n"
+        "4. Если нужно заполнить поля — отдельно даю значения.\n\n"
+        "Команды:\n"
+        "/start — запуск\n"
+        "/help — помощь\n"
+        "/clear — очистить контекст последней задачи"
     )
 
 
@@ -122,13 +131,15 @@ async def clear_context(message: Message):
 
 @dp.message(F.photo)
 async def solve_photo(message: Message):
-    await message.answer("Решаю...")
+    await message.answer("Принял. Считаю...")
 
     try:
         photo = message.photo[-1]
         file = await bot.get_file(photo.file_id)
         downloaded = await bot.download_file(file.file_path)
         image_bytes = downloaded.read()
+
+        print("Отправляю фото в Gemini...")
 
         response = client.models.generate_content(
             model="gemini-2.5-flash",
@@ -142,29 +153,30 @@ async def solve_photo(message: Message):
         )
 
         answer = response.text or "Не получилось распознать задачу."
+
         user_context[message.from_user.id] = answer
 
+        print("Ответ получен")
         await send_long_message(message, answer)
 
     except Exception as e:
-    error_text = str(e)
+        error_text = str(e)
+        print("ERROR:", error_text)
 
-    print("ERROR:", error_text)
+        if "API key" in error_text or "expired" in error_text:
+            await message.answer("Проблема с Gemini API key. Нужно обновить ключ в Render.")
 
-    if "API key" in error_text or "expired" in error_text:
-        await message.answer("Проблема с API ключом. Его нужно обновить.")
+        elif "location" in error_text:
+            await message.answer("Gemini недоступен из региона сервера. Проверь Render-регион или API.")
 
-    elif "location" in error_text:
-        await message.answer("Сервис недоступен из твоего региона. Используй Render или VPN.")
+        elif "quota" in error_text or "429" in error_text:
+            await message.answer("Лимит Gemini закончился. Попробуй позже.")
 
-    elif "quota" in error_text:
-        await message.answer("Превышен лимит запросов. Попробуй позже.")
+        elif "image" in error_text or "mime" in error_text:
+            await message.answer("Не получилось прочитать изображение. Попробуй отправить фото ещё раз.")
 
-    elif "image" in error_text or "mime" in error_text:
-        await message.answer("Не получилось прочитать изображение. Попробуй отправить фото ещё раз.")
-
-    else:
-        await message.answer("Что-то пошло не так. Попробуй ещё раз.")
+        else:
+            await message.answer("Что-то пошло не так. Попробуй ещё раз или отправь фото получше.")
 
 
 @dp.message(F.text)
@@ -182,14 +194,17 @@ async def ask_about_solution(message: Message):
             model="gemini-2.5-flash",
             contents=[
                 f"""
-Ты — Трегубчик, учебный ассистент.
+Ты — учебный ассистент Трегубчик.
+
+Твоя задача — ответить на вопрос пользователя по предыдущему решению.
 
 Стиль:
-- объясняй понятно;
+- понятно;
+- без воды;
 - без мата;
 - без унижения;
-- можно сухо подшутить, но коротко;
-- если пользователь не понял шаг, объясни проще.
+- если пользователь не понял шаг — объясни проще;
+- если пользователь нашёл ошибку — проверь и исправь.
 
 Предыдущее решение:
 {user_context[user_id]}
@@ -197,7 +212,7 @@ async def ask_about_solution(message: Message):
 Вопрос пользователя:
 {message.text}
 
-Ответь на вопрос по предыдущему решению.
+Ответь по делу.
 """
             ],
         )
@@ -205,14 +220,14 @@ async def ask_about_solution(message: Message):
         answer = response.text or "Не получилось ответить на вопрос."
 
         user_context[user_id] += (
-            f"\n\nВопрос: {message.text}\nОтвет: {answer}"
+            f"\n\nВопрос пользователя: {message.text}\nОтвет: {answer}"
         )
 
         await send_long_message(message, answer)
 
     except Exception as e:
-        await message.answer("Ошибка при ответе на вопрос.")
-        print("ERROR:", e)
+        print("ERROR:", str(e))
+        await message.answer("Ошибка при ответе на вопрос. Попробуй сформулировать иначе.")
 
 
 async def main():
