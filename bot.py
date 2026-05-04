@@ -109,7 +109,7 @@ async def start_web_server():
 @dp.message(F.text == "/start")
 async def start(message: Message):
     await message.answer(
-        "Я Трегубчик. Отправь фото задачи — решу. "
+        "Я Трегубчик. Отправь фото задачи и я решу. "
         "После ответа можешь спрашивать, если что-то непонятно."
     )
 
@@ -122,7 +122,7 @@ async def clear_context(message: Message):
 
 @dp.message(F.photo)
 async def solve_photo(message: Message):
-    await message.answer("Решаю. Не страшно, но руками всё-таки поработать придётся.")
+    await message.answer("Решаю...")
 
     try:
         photo = message.photo[-1]
@@ -147,10 +147,24 @@ async def solve_photo(message: Message):
         await send_long_message(message, answer)
 
     except Exception as e:
-        await message.answer(
-            "Ошибка при решении задачи. Проверь ключ Gemini, Render или качество фото."
-        )
-        print("ERROR:", e)
+    error_text = str(e)
+
+    print("ERROR:", error_text)
+
+    if "API key" in error_text or "expired" in error_text:
+        await message.answer("Проблема с API ключом. Его нужно обновить.")
+
+    elif "location" in error_text:
+        await message.answer("Сервис недоступен из твоего региона. Используй Render или VPN.")
+
+    elif "quota" in error_text:
+        await message.answer("Превышен лимит запросов. Попробуй позже.")
+
+    elif "image" in error_text or "mime" in error_text:
+        await message.answer("Не получилось прочитать изображение. Попробуй отправить фото ещё раз.")
+
+    else:
+        await message.answer("Что-то пошло не так. Попробуй ещё раз.")
 
 
 @dp.message(F.text)
