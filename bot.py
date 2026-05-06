@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import re
 import time
 import os
@@ -31,8 +32,29 @@ client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 MODEL = "gpt-4o-mini"
 
-# user_id -> последний ответ бота (контекст для уточняющих вопросов)
-user_context: dict[int, str] = {}
+# ───────────────────────────── persistent context ───────────────
+
+CONTEXT_FILE = "user_context.json"
+
+
+def load_context() -> dict:
+    try:
+        with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+            return {int(k): v for k, v in raw.items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_context(ctx: dict):
+    try:
+        with open(CONTEXT_FILE, "w", encoding="utf-8") as f:
+            json.dump({str(k): v for k, v in ctx.items()}, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"Ошибка сохранения контекста: {e}")
+
+
+user_context: dict = load_context()
 
 # rate limiting: user_id -> список временных меток запросов
 user_requests: dict[int, list[float]] = defaultdict(list)
@@ -156,7 +178,7 @@ async def send_typing_while(message: Message, coro):
     """Шлёт ChatAction параллельно с ожиданием корутины."""
     async def keep_typing():
         while True:
-            await bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
+            await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
             await asyncio.sleep(4)
 
     typing_task = asyncio.create_task(keep_typing())
@@ -259,6 +281,7 @@ async def about_command(message: Message):
 @dp.message(F.text == "/clear")
 async def clear_context(message: Message):
     user_context.pop(message.from_user.id, None)
+    save_context(user_context)
     await message.answer("Контекст сброшен. Присылай новую задачу.")
 
 
@@ -305,6 +328,7 @@ async def solve_photo(message: Message):
 
         answer = response.choices[0].message.content or "Не получилось распознать задачу."
         user_context[user_id] = answer
+        save_context(user_context)
 
         await send_long_message(message, answer)
 
@@ -362,6 +386,7 @@ async def ask_about_solution(message: Message):
 
         answer = response.choices[0].message.content or "Не получилось ответить на вопрос."
         user_context[user_id] += f"\n\nВопрос: {message.text}\nОтвет: {answer}"
+        save_context(user_context)
 
         await send_long_message(message, answer)
 
