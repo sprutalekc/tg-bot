@@ -18,7 +18,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not BOT_TOKEN or not OPENAI_API_KEY:
-    raise ValueError("Проверьте переменные BOT_TOKEN и OPENAI_API_KEY")
+    raise ValueError("Проверьте переменные BOT_TOKEN и OPENAI_API_KEY в Render")
 
 # ───────────────────────────── init ─────────────────────────────
 bot = Bot(token=BOT_TOKEN)
@@ -26,63 +26,70 @@ dp = Dispatcher()
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 MODEL = "gpt-4o-mini"
+# Храним контекст в памяти, чтобы Render не терял его при чтении битых файлов
 user_context = {}
 
 # ───────────────────────────── prompts ──────────────────────────
 
 SYSTEM_PROMPT = """
-Ты — учебный Telegram-ассистент по имени Трегубчик.
+Ты — учебный ассистент Трегубчик. Строгий, сухой преподаватель с мрачным юмором.
 
-Характер:
-Строгий преподаватель с живым характером. Точный, без воды. Твой юмор специфический: мрачноватый, абсурдный. 
-Ты не хамишь, но можешь тонко поддеть за невнимательность.
+МАТЕМАТИКА:
+- НЕ ИСПОЛЬЗУЙ LaTeX (никаких $ и \\frac).
+- Пиши формулы ПОНЯТНО: используй символы √, ², ³, ±, ≠, ≈, ∞, ∫, π.
+- Дроби пиши через скобки и слэш, чтобы было как в тетради: (x+1)/(y-2).
+- Никакого "программистского" языка (никаких sqrt() или pow()).
 
-Примеры настроения:
-- "Ошибка в знаке. Классика. Из-за таких ошибок ракеты летят не туда."
-- "Верно. Можешь идти праздновать. Или решить следующую задачу — на твоё усмотрение."
-- "Это называется расходящийся ряд. Он уходит в бесконечность, как и некоторые студенты на пересдаче."
-
-ПРАВИЛА:
-1. Реши задачу пошагово. НЕ используй LaTeX (никаких $, \\frac, \\times). Пиши простым текстом: x^2, sqrt(y), (a+b)/c.
-2. В конце ОБЯЗАТЕЛЬНО заполни блок 'ДЛЯ ЗАПОЛНЕНИЯ', выписав туда финальные значения.
-3. Если на фото ничего не понятно, так и скажи в своем стиле.
+СТИЛЬ:
+- Кратко, четко, без воды.
+- Если задача простая — реши быстро. Если сложная — пошагово.
+- В конце ОБЯЗАТЕЛЬНО блок 'ДЛЯ ЗАПОЛНЕНИЯ' с голыми цифрами.
 """
 
 FOLLOWUP_SYSTEM = """
-Ты — Трегубчик. Отвечай на уточняющие вопросы по решению. 
-Если студент благодарит, ответь коротко и сухо (например: "Разобрались. На экзамене я рядом не буду").
-Никаких "Рад помочь" и "Удачи". Это не твой стиль.
+Ты — Трегубчик. Студент задает вопрос по твоему решению.
+Отвечай коротко. Если благодарят — не рассыпайся в любезностях.
+Твой максимум: "Разобрались. На экзамене будет сложнее" или "Принято".
 """
 
-# ───────────────────────────── phrases ──────────────────────────
+# ───────────────────────────── фразы ────────────────────────────
 
 PHOTO_ACCEPT_PHRASES = [
-    "Принял, смотрю...", "Фото получил. Считаю...", "Разбираю задачу...",
-    "Сейчас посмотрим...", "Глянем, что тут у нас...", "Опять задачи? Ладно, жди."
+    "Принял. Глянем, что ты там наснимал...",
+    "Фото получил. Считаю. Надеюсь, там не почерк врача...",
+    "Так, посмотрим на этот шедевр. Минутку.",
+    "Получил. Разбираю каракули...",
+    "Принято. Сейчас решим, если условия понятны.",
+    "Вижу задачу. Ищу решение, жди."
 ]
 
 THINKING_PHRASES = [
-    "Так, посмотрим...", "Считаю...", "Разбираю...", "Секунду...", "Думаю..."
+    "Смотрю...", "Считаю...", "Разбираю...", "Секунду...", "Думаю...",
+    "Так-так...", "Где-то я это уже видел...", "Интересно."
+]
+
+REPLY_TO_THANKS = [
+    "Разобрались. Иди учи дальше.",
+    "Принято. На экзамене я рядом не буду.",
+    "Хорошо. Главное — сам пойми, а не просто перепиши.",
+    "Запомни это решение. Второй раз объяснять не стану.",
+    "Свободен. Пока что."
 ]
 
 # ───────────────────────────── utils ────────────────────────────
 
 def clean_response(text: str) -> str:
-    """Удаляет Markdown-разметку, которая может ломаться в ТГ"""
+    # Убираем жирный шрифт и прочий мусор, который может ломать чтение
     text = re.sub(r'\*\*|\*|__|#', '', text)
-    text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
     return text.strip()
 
 def compress_image(image_bytes: bytes) -> str:
-    """Сжатие фото для экономии токенов (как советовал Клод)"""
     img = Image.open(io.BytesIO(image_bytes))
     if img.mode != 'RGB':
         img = img.convert('RGB')
     
-    # Ограничиваем размер до 1200px по большой стороне
-    max_size = 1200
-    if max(img.size) > max_size:
-        img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+    # Сжимаем до 1200px — золотая середина для GPT-4o-mini
+    img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
     
     buffer = io.BytesIO()
     img.save(buffer, format="JPEG", quality=75, optimize=True)
@@ -99,7 +106,7 @@ async def generate_with_retry(messages):
             model=MODEL,
             messages=messages,
             max_tokens=2000,
-            temperature=0.4
+            temperature=0.3
         )
         return response
     except Exception as e:
@@ -117,12 +124,12 @@ async def send_typing_while(message: Message, coro):
 
 @dp.message(F.text == "/start")
 async def start(message: Message):
-    await message.answer("Я Трегубчик. Присылай фото — решу. Будешь задавать глупые вопросы — отвечу.")
+    await message.answer("Я Трегубчик. Кидай фото — разберем твои мучения.")
 
 @dp.message(F.text == "/clear")
 async def clear(message: Message):
     user_context.pop(message.from_user.id, None)
-    await message.answer("Контекст очищен. Как будто ничего и не было.")
+    await message.answer("Контекст очищен. Начинаем с чистого листа.")
 
 @dp.message(F.photo)
 async def solve_photo(message: Message):
@@ -134,7 +141,6 @@ async def solve_photo(message: Message):
         file_info = await bot.get_file(photo.file_id)
         photo_bytes = await bot.download_file(file_info.file_path)
         
-        # Сжимаем и кодируем
         image_b64 = compress_image(photo_bytes.read())
 
         messages = [
@@ -142,7 +148,7 @@ async def solve_photo(message: Message):
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Реши это:"},
+                    {"type": "text", "text": "Реши задачу:"},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
                 ]
             }
@@ -150,45 +156,52 @@ async def solve_photo(message: Message):
 
         response = await send_typing_while(message, generate_with_retry(messages))
         if not response:
-            await message.answer("OpenAI молчит. Видимо, задача слишком сложная даже для него. Попробуй позже.")
+            await message.answer("OpenAI тупит. Попробуй через минуту.")
             return
 
         answer = response.choices[0].message.content
-        user_context[user_id] = answer
+        user_context[user_id] = answer # Сохраняем контекст
         await send_long_message(message, answer)
 
     except Exception as e:
         print(f"Error: {e}")
-        await message.answer("Что-то пошло не так. Либо фото плохое, либо я сегодня не в духе.")
+        await message.answer("Не смог прочитать. Пришли фото получше.")
 
 @dp.message(F.text)
-async def ask_question(message: Message):
+async def handle_text(message: Message):
     user_id = message.from_user.id
-    if user_id not in user_context:
-        await message.answer("Сначала задачу скинь, потом спрашивай.")
+    text = message.text.lower()
+
+    # Если студент просто вежливый
+    if any(word in text for word in ["спасибо", "спс", "понял", "благодарю"]):
+        await message.answer(random.choice(REPLY_TO_THANKS))
         return
 
-    await message.answer(random.choice(THINKING_PHRASES))
-    
-    messages = [
-        {"role": "system", "content": FOLLOWUP_SYSTEM + f"\nКонтекст:\n{user_context[user_id]}"},
-        {"role": "user", "content": message.text}
-    ]
+    # Если есть контекст — отвечаем на вопрос
+    if user_id in user_context:
+        await message.answer(random.choice(THINKING_PHRASES))
+        
+        messages = [
+            {"role": "system", "content": FOLLOWUP_SYSTEM + f"\nКонтекст задачи:\n{user_context[user_id]}"},
+            {"role": "user", "content": message.text}
+        ]
 
-    response = await generate_with_retry(messages)
-    if response:
-        answer = response.choices[0].message.content
-        user_context[user_id] += f"\nQ: {message.text}\nA: {answer}"
-        await send_long_message(message, answer)
+        response = await generate_with_retry(messages)
+        if response:
+            answer = response.choices[0].message.content
+            # Обновляем контекст, чтобы помнить и уточнения
+            user_context[user_id] += f"\nВопрос: {message.text}\nОтвет: {answer}"
+            await send_long_message(message, answer)
+        else:
+            await message.answer("Не могу ответить. Спроси по-другому.")
     else:
-        await message.answer("Не смог сообразить ответ. Перефразируй.")
+        await message.answer("Сначала задачу скинь (фото), потом будем разговаривать.")
 
 # ───────────────────────────── server ─────────────────────────────
 
 async def main():
-    # Простейший сервер для Render
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="Running"))
+    app.router.add_get("/", lambda r: web.Response(text="Bot Active"))
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8080)))
