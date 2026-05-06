@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import io
+import random
 import re
 import time
 import os
@@ -251,6 +252,29 @@ async def send_long_message(message: Message, text: str):
         await message.answer(text[i:i + 4000])
 
 
+
+# ───────────────────────────── phrases ─────────────────────────
+
+THINKING_PHRASES = [
+    "Смотрю...",
+    "Считаю...",
+    "Разбираю...",
+    "Секунду...",
+    "Думаю...",
+    "Сейчас.",
+    "Принял.",
+    "Глянем.",
+]
+
+PHOTO_ACCEPT_PHRASES = [
+    "Принял, смотрю...",
+    "Фото получил. Считаю...",
+    "Разбираю задачу...",
+    "Сейчас посмотрим...",
+    "Получил. Секунду...",
+    "Глянем что тут...",
+]
+
 # ───────────────────────────── web server ───────────────────────
 
 async def handle(request):
@@ -332,7 +356,7 @@ async def solve_photo(message: Message):
         )
         return
 
-    await message.answer("Принял, смотрю...")
+    await message.answer(random.choice(PHOTO_ACCEPT_PHRASES))
 
     try:
         photo = message.photo[-1]
@@ -401,7 +425,7 @@ async def ask_about_solution(message: Message):
         await message.answer("Не более 5 запросов в минуту. Подожди немного.")
         return
 
-    await message.answer("Смотрю...")
+    await message.answer(random.choice(THINKING_PHRASES))
 
     try:
         messages = [
