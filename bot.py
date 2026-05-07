@@ -38,6 +38,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
+# Обновлено на новую модель
 MODEL = "gpt-5-mini"
 
 # ───────────────────────────── persistent context ───────────────
@@ -221,8 +222,8 @@ def clean_response(text: str) -> str:
     text = re.sub(r'\\neq', '!=', text)
     text = re.sub(r'\\approx', '≈', text)
     text = re.sub(r'\\infty', '∞', text)
-    text = re.sub(r'\\\w+\{([^}]*)\}', r'\1', text)  # \cmd{...} -> содержимое
-    text = re.sub(r'\\\w+', '', text)                  # одиночные \cmd -> убрать
+    text = re.sub(r'\\\w+\{([^}]*)\}', r'\1', text)
+    text = re.sub(r'\\\w+', '', text)
 
     # Markdown
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
@@ -254,7 +255,7 @@ def compress_image(image_bytes: bytes, max_size: int = 800, quality: int = 70) -
         return compressed
     except Exception as e:
         print(f"Ошибка сжатия: {e}")
-        return image_bytes  # отдаём оригинал если что-то пошло не так
+        return image_bytes
 
 
 def build_graph(graph_data: dict) -> bytes:
@@ -288,11 +289,10 @@ def build_graph(graph_data: dict) -> bytes:
         color = colors[i % len(colors)]
         try:
             y = eval(expr, {"x": x, "np": np, "__builtins__": {}})
-            y = np.where(np.abs(y) > 1e6, np.nan, y)  # убираем выбросы
+            y = np.where(np.abs(y) > 1e6, np.nan, y)
             ax.plot(x, y, color=color, linewidth=2.2, label=label, zorder=3)
             ys.append(y)
 
-            # Нули функции
             if graph_data.get("mark_zeros") and len(functions) == 1:
                 sign_changes = np.where(np.diff(np.sign(y)))[0]
                 for idx in sign_changes:
@@ -305,7 +305,6 @@ def build_graph(graph_data: dict) -> bytes:
         except Exception as e:
             print(f"Ошибка построения {expr}: {e}")
 
-    # Точки пересечения
     if graph_data.get("mark_intersections") and len(ys) >= 2:
         try:
             diff = ys[0] - ys[1]
@@ -331,7 +330,6 @@ def build_graph(graph_data: dict) -> bytes:
         legend = ax.legend(facecolor='#1a1a2e', edgecolor='#3a3a5a',
                            labelcolor='#c0c0d0', fontsize=9)
 
-    # Умные пределы по y
     all_y = [y for y in ys if y is not None]
     if all_y:
         combined = np.concatenate(all_y)
@@ -396,7 +394,7 @@ async def check_and_build_graph(image_b64: str, solution_text: str, message: Mes
         )
 
     except json.JSONDecodeError:
-        pass  # GPT вернул не JSON — значит график не нужен
+        pass  
     except Exception as e:
         print(f"Ошибка графика: {e}")
 
@@ -429,6 +427,8 @@ async def send_typing_while(message: Message, coro):
 
 
 async def generate_with_retry(messages: list, retries: int = 3):
+    """Делает запрос к OpenAI, в случае ошибки возвращает саму ошибку для вывода в ТГ."""
+    last_error = None
     for i in range(retries):
         try:
             response = await client.chat.completions.create(
@@ -438,11 +438,13 @@ async def generate_with_retry(messages: list, retries: int = 3):
             )
             return response
         except Exception as e:
+            last_error = e
             print(f"Ошибка OpenAI (попытка {i+1}): {e}")
             if i < retries - 1:
                 await asyncio.sleep(2)
             else:
-                return None
+                # Если все попытки исчерпаны, возвращаем объект ошибки!
+                return last_error
 
 
 async def send_long_message(message: Message, text: str):
@@ -452,7 +454,6 @@ async def send_long_message(message: Message, text: str):
     text = clean_response(text)
     for i in range(0, len(text), 4000):
         await message.answer(text[i:i + 4000])
-
 
 
 # ───────────────────────────── phrases ─────────────────────────
@@ -533,7 +534,7 @@ async def help_command(message: Message):
 @dp.message(F.text == "/about")
 async def about_command(message: Message):
     await message.answer(
-        "Трегубчик — учебный ассистент на основе GPT-4o mini.\n\n"
+        "Трегубчик — учебный ассистент на основе GPT-5 mini.\n\n"
         "Создан, чтобы помогать разбирать задачи, а не решать их вместо тебя. "
         "Объясняю шаги, отвечаю на уточняющие вопросы, держу ответы чёткими.\n\n"
         "Лимит: не более 5 запросов в минуту."
@@ -583,6 +584,24 @@ async def solve_photo(message: Message):
 
         response = await send_typing_while(message, generate_with_retry(messages))
 
+        # === НОВЫЙ БЛОК ОТЛОВКИ ОШИБОК ===
+        if isinstance(response, Exception):
+            error_text = str(response)
+            if "invalid_api_key" in error_text or "Incorrect API key" in error_text:
+                await message.answer("Проблема с OpenAI API key. Нужно обновить ключ в Render.")
+            elif "insufficient_quota" in error_text or "quota" in error_text:
+                await message.answer("Лимит OpenAI исчерпан. Проверь баланс на platform.openai.com.")
+            elif "rate_limit" in error_text or "429" in error_text:
+                await message.answer("Слишком много запросов к OpenAI. Подожди немного.")
+            elif "content_policy" in error_text:
+                await message.answer("OpenAI отклонил запрос. Попробуй другое фото.")
+            elif "model" in error_text.lower():
+                await message.answer(f"OpenAI ругается на модель (возможно, нет доступа). Текст: {error_text}")
+            else:
+                await message.answer(f"OpenAI выдал неизвестную ошибку:\n`{error_text}`")
+            return
+        # =================================
+
         if not response:
             await message.answer(
                 "OpenAI не отвечает. Подожди пару секунд и попробуй снова."
@@ -599,21 +618,8 @@ async def solve_photo(message: Message):
         await check_and_build_graph(image_b64, answer, message)
 
     except Exception as e:
-        error_text = str(e)
-        print("ERROR:", error_text)
-
-        if "invalid_api_key" in error_text or "Incorrect API key" in error_text:
-            await message.answer("Проблема с OpenAI API key. Нужно обновить ключ в Render.")
-        elif "insufficient_quota" in error_text or "quota" in error_text:
-            await message.answer("Лимит OpenAI исчерпан. Проверь баланс на platform.openai.com.")
-        elif "rate_limit" in error_text or "429" in error_text:
-            await message.answer("Слишком много запросов к OpenAI. Подожди немного.")
-        elif "content_policy" in error_text:
-            await message.answer("OpenAI отклонил запрос. Попробуй другое фото.")
-        elif "image" in error_text or "mime" in error_text:
-            await message.answer("Не смог прочитать изображение. Пришли фото ещё раз.")
-        else:
-            await message.answer("Что-то пошло не так. Попробуй снова или пришли фото получше.")
+        print("ERROR:", str(e))
+        await message.answer(f"Что-то сломалось внутри самого бота: {str(e)}")
 
 
 @dp.message(F.text)
@@ -646,6 +652,12 @@ async def ask_about_solution(message: Message):
 
         response = await send_typing_while(message, generate_with_retry(messages))
 
+        # === НОВЫЙ БЛОК ОТЛОВКИ ОШИБОК ===
+        if isinstance(response, Exception):
+            await message.answer(f"OpenAI вернул ошибку при ответе на вопрос:\n`{str(response)}`")
+            return
+        # =================================
+
         if not response:
             await message.answer("OpenAI не отвечает. Попробуй чуть позже.")
             return
@@ -658,7 +670,7 @@ async def ask_about_solution(message: Message):
 
     except Exception as e:
         print("ERROR:", str(e))
-        await message.answer("Ошибка при ответе. Попробуй переформулировать вопрос.")
+        await message.answer(f"Ошибка при ответе: {str(e)}")
 
 
 # ───────────────────────────── main ─────────────────────────────
