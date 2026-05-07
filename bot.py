@@ -38,7 +38,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-MODEL = "gpt-4o-mini"
+MODEL = "gpt-5-mini"
 
 # ───────────────────────────── persistent context ───────────────
 
