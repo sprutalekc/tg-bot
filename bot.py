@@ -9,6 +9,11 @@ import os
 from collections import defaultdict
 
 from PIL import Image
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+import numpy as np
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
@@ -89,10 +94,21 @@ SYSTEM_PROMPT = """
 Правила форматирования (строго):
 - НЕ используй LaTeX, символы $, \\frac, \\times, \\cdot, ^{} и подобные.
 - НЕ используй Markdown: никаких **, *, ##, `, _подчёркиваний_.
-- Формулы пиши обычным текстом: "a^2 + b^2 = c^2", "x = (-b + sqrt(D)) / 2a".
-- Дроби пиши через слэш: "1/2", "3/4".
-- Степени через ^: "x^2", "2^10".
 - Текст как обычное сообщение — никакой разметки.
+
+Обозначения — пиши понятно, как говорят вслух:
+- Корень: "корень из 25" или "√25", НЕ "sqrt(25)"
+- Дроби: "1/2", "три четвёртых", НЕ "frac{1}{2}"
+- Степени: "x в квадрате", "x^2", НЕ "x^{2}"
+- Умножение: "·" или "×" или просто "3 на 4", НЕ "*"
+- Интеграл: "интеграл от 0 до 1", НЕ "\int_0^1"
+- Предел: "предел при x стремящемся к 0", НЕ "\lim_{x->0}"
+- Бесконечность: "бесконечность" или "∞"
+- Принадлежность: "x принадлежит R" или "x ∈ R"
+- Для всех: "для всех x" или "∀x"
+- Сумма: "сумма от i=1 до n"
+- Если символ помогает понять — используй его (√, ∞, ∈, ∀, ±, ≤, ≥, ≠, ≈)
+- Если нет подходящего символа — пиши словами, понятно и по-человечески
 
 Правила ответа:
 1. Кратко распознай условие задачи.
@@ -141,10 +157,49 @@ FOLLOWUP_SYSTEM = """
 Правила форматирования (строго):
 - НЕ используй LaTeX, символы $, \\frac, \\times и подобные.
 - НЕ используй Markdown: никаких **, *, ##, `, _.
-- Формулы обычным текстом: "x = (-b + sqrt(D)) / 2a", дроби через слэш.
 - Текст как обычное сообщение.
+- Обозначения как в SYSTEM_PROMPT: "корень из x" или √x, НЕ sqrt(x).
+  Пиши понятно — как объясняют вслух на паре.
 """
 
+
+
+GRAPH_SYSTEM_PROMPT = """
+Ты анализируешь задачу и определяешь: нужно ли построить график для её решения или объяснения.
+
+Если график нужен — верни ТОЛЬКО JSON без какого-либо текста до или после, строго такого формата:
+{
+  "need_graph": true,
+  "functions": [
+    {"expr": "x**2 - 3*x + 2", "label": "f(x) = x² - 3x + 2"},
+    {"expr": "2*x - 1", "label": "g(x) = 2x - 1"}
+  ],
+  "x_min": -2,
+  "x_max": 5,
+  "title": "Пересечение параболы и прямой",
+  "mark_zeros": true,
+  "mark_intersections": true
+}
+
+Если график НЕ нужен — верни ТОЛЬКО:
+{"need_graph": false}
+
+Правила для expr:
+- Используй только Python/numpy синтаксис
+- Степень: x**2, x**3
+- Корень: np.sqrt(x)
+- Тригонометрия: np.sin(x), np.cos(x), np.tan(x)
+- Логарифм: np.log(x) — натуральный, np.log10(x) — десятичный
+- Экспонента: np.exp(x)
+- Абсолютное значение: np.abs(x)
+- Константа e: np.e
+- Пи: np.pi
+- Не используй math.*, только np.*
+
+x_min и x_max — разумный диапазон для задачи. Обычно от -10 до 10.
+mark_zeros — отметить нули функции на графике.
+mark_intersections — отметить точки пересечения функций.
+"""
 
 # ───────────────────────────── helpers ──────────────────────────
 
@@ -200,6 +255,151 @@ def compress_image(image_bytes: bytes, max_size: int = 800, quality: int = 70) -
     except Exception as e:
         print(f"Ошибка сжатия: {e}")
         return image_bytes  # отдаём оригинал если что-то пошло не так
+
+
+def build_graph(graph_data: dict) -> bytes:
+    """Строит график по данным от GPT и возвращает PNG bytes."""
+    fig, ax = plt.subplots(figsize=(9, 6), dpi=130)
+
+    # Стиль
+    fig.patch.set_facecolor('#1a1a2e')
+    ax.set_facecolor('#16213e')
+    ax.tick_params(colors='#a0a0b0', labelsize=9)
+    ax.xaxis.label.set_color('#a0a0b0')
+    ax.yaxis.label.set_color('#a0a0b0')
+    for spine in ax.spines.values():
+        spine.set_edgecolor('#2a2a4a')
+
+    ax.axhline(0, color='#3a3a5a', linewidth=1.2, zorder=1)
+    ax.axvline(0, color='#3a3a5a', linewidth=1.2, zorder=1)
+    ax.grid(True, color='#2a2a4a', linewidth=0.6, linestyle='--', alpha=0.7)
+
+    x_min = graph_data.get("x_min", -10)
+    x_max = graph_data.get("x_max", 10)
+    x = np.linspace(x_min, x_max, 1200)
+
+    colors = ['#7eb8f7', '#f7a07e', '#7ef7a0', '#f7e07e', '#d07ef7']
+    functions = graph_data.get("functions", [])
+    ys = []
+
+    for i, fn in enumerate(functions):
+        expr = fn.get("expr", "")
+        label = fn.get("label", f"f{i+1}(x)")
+        color = colors[i % len(colors)]
+        try:
+            y = eval(expr, {"x": x, "np": np, "__builtins__": {}})
+            y = np.where(np.abs(y) > 1e6, np.nan, y)  # убираем выбросы
+            ax.plot(x, y, color=color, linewidth=2.2, label=label, zorder=3)
+            ys.append(y)
+
+            # Нули функции
+            if graph_data.get("mark_zeros") and len(functions) == 1:
+                sign_changes = np.where(np.diff(np.sign(y)))[0]
+                for idx in sign_changes:
+                    if not np.isnan(y[idx]) and not np.isnan(y[idx+1]):
+                        x_zero = x[idx] - y[idx] * (x[idx+1] - x[idx]) / (y[idx+1] - y[idx])
+                        ax.plot(x_zero, 0, 'o', color='#ffffff', markersize=6,
+                                zorder=5, markeredgecolor=color, markeredgewidth=1.5)
+                        ax.annotate(f'  {x_zero:.2f}', (x_zero, 0),
+                                    color='#c0c0d0', fontsize=8, va='bottom')
+        except Exception as e:
+            print(f"Ошибка построения {expr}: {e}")
+
+    # Точки пересечения
+    if graph_data.get("mark_intersections") and len(ys) >= 2:
+        try:
+            diff = ys[0] - ys[1]
+            sign_changes = np.where(np.diff(np.sign(diff)))[0]
+            for idx in sign_changes:
+                if not np.isnan(diff[idx]) and not np.isnan(diff[idx+1]):
+                    x_int = x[idx] - diff[idx] * (x[idx+1] - x[idx]) / (diff[idx+1] - diff[idx])
+                    y_int = float(eval(functions[0]["expr"],
+                                       {"x": x_int, "np": np, "__builtins__": {}}))
+                    ax.plot(x_int, y_int, '*', color='#ffffff', markersize=10,
+                            zorder=6, markeredgecolor='#f7a07e', markeredgewidth=1)
+                    ax.annotate(f'  ({x_int:.2f}; {y_int:.2f})', (x_int, y_int),
+                                color='#c0c0d0', fontsize=8)
+        except Exception as e:
+            print(f"Ошибка пересечений: {e}")
+
+    title = graph_data.get("title", "График")
+    ax.set_title(title, color='#d0d0e8', fontsize=12, pad=12)
+    ax.set_xlabel("x", fontsize=10)
+    ax.set_ylabel("y", fontsize=10, rotation=0, labelpad=12)
+
+    if functions:
+        legend = ax.legend(facecolor='#1a1a2e', edgecolor='#3a3a5a',
+                           labelcolor='#c0c0d0', fontsize=9)
+
+    # Умные пределы по y
+    all_y = [y for y in ys if y is not None]
+    if all_y:
+        combined = np.concatenate(all_y)
+        finite = combined[np.isfinite(combined)]
+        if len(finite):
+            margin = (finite.max() - finite.min()) * 0.15 or 1
+            ax.set_ylim(finite.min() - margin, finite.max() + margin)
+
+    ax.set_xlim(x_min, x_max)
+    ax.xaxis.set_major_locator(ticker.AutoLocator())
+    ax.yaxis.set_major_locator(ticker.AutoLocator())
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+async def check_and_build_graph(image_b64: str, solution_text: str, message: Message):
+    """Спрашивает GPT нужен ли график, и если да — строит и отправляет."""
+    try:
+        check_messages = [
+            {"role": "system", "content": GRAPH_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                    },
+                    {
+                        "type": "text",
+                        "text": f"Решение задачи:\n{solution_text}"
+                    }
+                ],
+            },
+        ]
+
+        response = await client.chat.completions.create(
+            model=MODEL,
+            messages=check_messages,
+            max_tokens=400,
+        )
+
+        raw = response.choices[0].message.content or ""
+        raw = raw.strip().strip("```json").strip("```").strip()
+        graph_data = json.loads(raw)
+
+        if not graph_data.get("need_graph"):
+            return
+
+        png_bytes = await asyncio.get_event_loop().run_in_executor(
+            None, build_graph, graph_data
+        )
+
+        from aiogram.types import BufferedInputFile
+        await message.answer_photo(
+            BufferedInputFile(png_bytes, filename="graph.png"),
+            caption="График к задаче."
+        )
+
+    except json.JSONDecodeError:
+        pass  # GPT вернул не JSON — значит график не нужен
+    except Exception as e:
+        print(f"Ошибка графика: {e}")
+
 
 def is_rate_limited(user_id: int) -> bool:
     """Возвращает True, если пользователь превысил лимит запросов."""
@@ -394,6 +594,9 @@ async def solve_photo(message: Message):
         save_context(user_context)
 
         await send_long_message(message, answer)
+
+        # Строим график если нужен
+        await check_and_build_graph(image_b64, answer, message)
 
     except Exception as e:
         error_text = str(e)
