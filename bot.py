@@ -165,44 +165,49 @@ FOLLOWUP_SYSTEM = """
 
 
 GRAPH_SYSTEM_PROMPT = """
-Ты анализируешь задачу и определяешь: нужно ли построить график для её решения или объяснения.
+Ты анализируешь задачу и определяешь: нужно ли построить график.
 
-Если график нужен — верни ТОЛЬКО JSON без какого-либо текста до или после, строго такого формата:
+Если график нужен — верни ТОЛЬКО JSON без текста до или после:
 {
   "need_graph": true,
   "functions": [
-    {"expr": "x**2 - 3*x + 2", "label": "f(x) = x² - 3x + 2"},
-    {"expr": "2*x - 1", "label": "g(x) = 2x - 1"}
+    {"expr": "np.where(x <= -4, 3, np.where(x <= 4, np.abs(x**2 - 4*np.abs(x) + 3), 3 - (x-4)**2))", "label": "y(x)"}
   ],
-  "x_min": -2,
-  "x_max": 5,
-  "title": "Пересечение параболы и прямой",
-  "mark_zeros": true,
-  "mark_intersections": true
+  "x_min": -6,
+  "x_max": 7,
+  "y_min": -5,
+  "y_max": 5,
+  "title": "Кусочная функция",
+  "mark_zeros": false,
+  "mark_intersections": false
 }
 
 Если график НЕ нужен — верни ТОЛЬКО:
 {"need_graph": false}
 
-Правила для expr:
-- Используй только Python/numpy синтаксис
+ПРАВИЛА ДЛЯ expr (строго numpy):
 - Степень: x**2, x**3
 - Корень: np.sqrt(x)
 - Тригонометрия: np.sin(x), np.cos(x), np.tan(x)
-- Логарифм: np.log(x) — натуральный, np.log10(x) — десятичный
+- Логарифм: np.log(x), np.log10(x)
 - Экспонента: np.exp(x)
-- Абсолютное значение: np.abs(x)
-- Константа e: np.e
-- Пи: np.pi
-- Не используй math.*, только np.*
+- Модуль: np.abs(x)
+- e и π: np.e, np.pi
+- Только np.*, никаких math.*
 
-x_min и x_max — ВАЖНО: выбирай минимально достаточный диапазон.
-Смотри на задачу: если важные точки в диапазоне [-3, 5] — ставь именно это, не -10/10.
-Если корни/пересечения/экстремумы в пределах 15 — не делай диапазон 100.
-Правило: диапазон должен показывать все важные точки + небольшой отступ (~20%).
-Примеры: нули при x=2 и x=5 → x_min=-1, x_max=7. Экстремум при x=0 → x_min=-3, x_max=3.
-mark_zeros — отметить нули функции на графике.
-mark_intersections — отметить точки пересечения функций.
+КУСОЧНЫЕ ФУНКЦИИ — используй np.where:
+  np.where(условие, значение_если_да, значение_если_нет)
+  Вложенные: np.where(x < a, f1, np.where(x < b, f2, f3))
+  Пример трёх кусков:
+  np.where(x <= -4, 3, np.where(x <= 4, np.abs(x**2 - 4*np.abs(x) + 3), 3-(x-4)**2))
+
+ДИАПАЗОН — критически важно:
+- y_min и y_max ОБЯЗАТЕЛЬНЫ — оцени реальный диапазон значений функции и укажи его
+- x_min/x_max: минимальный диапазон охватывающий все важные точки + 20% отступ
+- Если видишь на фото готовый график — скопируй его диапазон осей точно
+- НЕ ставь диапазон больше чем нужно: если всё в пределах [-5, 5], не пиши [-100, 100]
+mark_zeros — отметить нули (только для простых функций, не кусочных).
+mark_intersections — отметить пересечения двух функций.
 """
 
 # ───────────────────────────── helpers ──────────────────────────
@@ -335,14 +340,20 @@ def build_graph(graph_data: dict) -> bytes:
         legend = ax.legend(facecolor='#1a1a2e', edgecolor='#3a3a5a',
                            labelcolor='#c0c0d0', fontsize=9)
 
-    # Умные пределы по y
-    all_y = [y for y in ys if y is not None]
-    if all_y:
-        combined = np.concatenate(all_y)
-        finite = combined[np.isfinite(combined)]
-        if len(finite):
-            margin = (finite.max() - finite.min()) * 0.15 or 1
-            ax.set_ylim(finite.min() - margin, finite.max() + margin)
+    # Пределы по y — берём из данных если заданы, иначе авто
+    y_min_data = graph_data.get("y_min")
+    y_max_data = graph_data.get("y_max")
+    if y_min_data is not None and y_max_data is not None:
+        ax.set_ylim(y_min_data, y_max_data)
+    else:
+        all_y = [y for y in ys if y is not None]
+        if all_y:
+            combined = np.concatenate(all_y)
+            finite = combined[np.isfinite(combined)]
+            if len(finite):
+                p5, p95 = np.percentile(finite, 5), np.percentile(finite, 95)
+                margin = (p95 - p5) * 0.2 or 1
+                ax.set_ylim(p5 - margin, p95 + margin)
 
     # Авто-обрезка: если GPT задал слишком широкий диапазон,
     # сжимаем до области где функция реально меняется
@@ -616,10 +627,11 @@ async def solve_photo(message: Message):
         user_context[user_id] = answer
         save_context(user_context)
 
-        await send_long_message(message, answer)
-
-        # Строим график если нужен
-        await check_and_build_graph(image_b64, answer, message)
+        # Отправляем ответ и проверяем график параллельно
+        await asyncio.gather(
+            send_long_message(message, answer),
+            check_and_build_graph(image_b64, answer, message)
+        )
 
     except Exception as e:
         error_text = str(e)
