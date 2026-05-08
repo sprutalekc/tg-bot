@@ -202,10 +202,12 @@ GRAPH_SYSTEM_PROMPT = """
   np.where(x <= -4, 3, np.where(x <= 4, np.abs(x**2 - 4*np.abs(x) + 3), 3-(x-4)**2))
 
 ДИАПАЗОН — критически важно:
-- y_min и y_max ОБЯЗАТЕЛЬНЫ — оцени реальный диапазон значений функции и укажи его
-- x_min/x_max: минимальный диапазон охватывающий все важные точки + 20% отступ
-- Если видишь на фото готовый график — скопируй его диапазон осей точно
-- НЕ ставь диапазон больше чем нужно: если всё в пределах [-5, 5], не пиши [-100, 100]
+- y_min и y_max ОБЯЗАТЕЛЬНЫ — смотри на условие/фото и ставь реальный диапазон значений
+- Если на фото есть готовый эталонный график — скопируй его оси ТОЧНО
+- x_min/x_max: только то что нужно видеть, не больше. Для кусочных — до последней точки разбиения + 1-2 единицы
+- НЕ ставь x_max дальше последней точки разбиения если функция там уходит в бесконечность
+- Пример: разбиение до x=4, парабола уходит вниз → x_max=6, не 10
+- НЕ ставь диапазон больше чем нужно: если всё в пределах [-5, 5], не пиши y_min=-20
 mark_zeros — отметить нули (только для простых функций, не кусочных).
 mark_intersections — отметить пересечения двух функций.
 """
@@ -290,6 +292,8 @@ def build_graph(graph_data: dict) -> bytes:
     colors = ['#7eb8f7', '#f7a07e', '#7ef7a0', '#f7e07e', '#d07ef7']
     functions = graph_data.get("functions", [])
     ys = []
+    y_min_data = graph_data.get("y_min")
+    y_max_data = graph_data.get("y_max")
 
     for i, fn in enumerate(functions):
         expr = fn.get("expr", "")
@@ -298,6 +302,18 @@ def build_graph(graph_data: dict) -> bytes:
         try:
             y = eval(expr, {"x": x, "np": np, "__builtins__": {}})
             y = np.where(np.abs(y) > 1e6, np.nan, y)  # убираем выбросы
+
+            # Клипуем значения по y_min/y_max — убираем хвосты за пределами видимости
+            if y_min_data is not None and y_max_data is not None:
+                margin = (y_max_data - y_min_data) * 0.3
+                y = np.where(y < y_min_data - margin, np.nan, y)
+                y = np.where(y > y_max_data + margin, np.nan, y)
+
+            # Убираем вертикальные артефакты на разрывах: большие скачки → nan
+            dy = np.abs(np.diff(y, prepend=y[0]))
+            visible_range = (np.nanmax(y) - np.nanmin(y)) if np.any(np.isfinite(y)) else 1
+            y = np.where(dy > visible_range * 0.5, np.nan, y)
+
             ax.plot(x, y, color=color, linewidth=2.2, label=label, zorder=3)
             ys.append(y)
 
@@ -341,8 +357,6 @@ def build_graph(graph_data: dict) -> bytes:
                            labelcolor='#c0c0d0', fontsize=9)
 
     # Пределы по y — берём из данных если заданы, иначе авто
-    y_min_data = graph_data.get("y_min")
-    y_max_data = graph_data.get("y_max")
     if y_min_data is not None and y_max_data is not None:
         ax.set_ylim(y_min_data, y_max_data)
     else:
