@@ -38,7 +38,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-MODEL = "gpt-4o-mini"
+MODEL = "gpt-4.1-mini"
 
 # ───────────────────────────── persistent context ───────────────
 
@@ -196,7 +196,11 @@ GRAPH_SYSTEM_PROMPT = """
 - Пи: np.pi
 - Не используй math.*, только np.*
 
-x_min и x_max — разумный диапазон для задачи. Обычно от -10 до 10.
+x_min и x_max — ВАЖНО: выбирай минимально достаточный диапазон.
+Смотри на задачу: если важные точки в диапазоне [-3, 5] — ставь именно это, не -10/10.
+Если корни/пересечения/экстремумы в пределах 15 — не делай диапазон 100.
+Правило: диапазон должен показывать все важные точки + небольшой отступ (~20%).
+Примеры: нули при x=2 и x=5 → x_min=-1, x_max=7. Экстремум при x=0 → x_min=-3, x_max=3.
 mark_zeros — отметить нули функции на графике.
 mark_intersections — отметить точки пересечения функций.
 """
@@ -340,7 +344,26 @@ def build_graph(graph_data: dict) -> bytes:
             margin = (finite.max() - finite.min()) * 0.15 or 1
             ax.set_ylim(finite.min() - margin, finite.max() + margin)
 
-    ax.set_xlim(x_min, x_max)
+    # Авто-обрезка: если GPT задал слишком широкий диапазон,
+    # сжимаем до области где функция реально меняется
+    all_finite_x = []
+    if ys:
+        combined = np.concatenate(ys)
+        for yi, fn in zip(ys, functions):
+            interesting = np.where(np.isfinite(yi) & (np.abs(yi) < 1e4))[0]
+            if len(interesting):
+                all_finite_x.extend([x[interesting[0]], x[interesting[-1]]])
+        if all_finite_x and (x_max - x_min) > 30:
+            auto_xmin = max(x_min, min(all_finite_x) - (x_max - x_min) * 0.1)
+            auto_xmax = min(x_max, max(all_finite_x) + (x_max - x_min) * 0.1)
+            if auto_xmax - auto_xmin > 2:
+                ax.set_xlim(auto_xmin, auto_xmax)
+            else:
+                ax.set_xlim(x_min, x_max)
+        else:
+            ax.set_xlim(x_min, x_max)
+    else:
+        ax.set_xlim(x_min, x_max)
     ax.xaxis.set_major_locator(ticker.AutoLocator())
     ax.yaxis.set_major_locator(ticker.AutoLocator())
 
