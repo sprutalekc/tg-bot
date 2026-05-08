@@ -420,10 +420,13 @@ async def check_and_build_graph(image_b64: str, solution_text: str, message: Mes
             },
         ]
 
-        response = await client.chat.completions.create(
-            model=MODEL,
-            messages=check_messages,
-            max_tokens=400,
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=MODEL,
+                messages=check_messages,
+                max_tokens=400,
+            ),
+            timeout=30
         )
 
         raw = response.choices[0].message.content or ""
@@ -476,15 +479,24 @@ async def send_typing_while(message: Message, coro):
     return result
 
 
-async def generate_with_retry(messages: list, retries: int = 3):
+async def generate_with_retry(messages: list, retries: int = 3, timeout: int = 60):
     for i in range(retries):
         try:
-            response = await client.chat.completions.create(
-                model=MODEL,
-                messages=messages,
-                max_tokens=2000,
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=MODEL,
+                    messages=messages,
+                    max_tokens=2000,
+                ),
+                timeout=timeout
             )
             return response
+        except asyncio.TimeoutError:
+            print(f"Таймаут OpenAI (попытка {i+1})")
+            if i < retries - 1:
+                await asyncio.sleep(2)
+            else:
+                return None
         except Exception as e:
             print(f"Ошибка OpenAI (попытка {i+1}): {e}")
             if i < retries - 1:
@@ -642,10 +654,14 @@ async def solve_photo(message: Message):
         save_context(user_context)
 
         # Отправляем ответ и проверяем график параллельно
-        await asyncio.gather(
+        results = await asyncio.gather(
             send_long_message(message, answer),
-            check_and_build_graph(image_b64, answer, message)
+            check_and_build_graph(image_b64, answer, message),
+            return_exceptions=True
         )
+        for r in results:
+            if isinstance(r, Exception):
+                print(f"Ошибка в gather: {r}")
 
     except Exception as e:
         error_text = str(e)
