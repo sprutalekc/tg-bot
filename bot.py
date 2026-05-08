@@ -356,17 +356,27 @@ def build_graph(graph_data: dict) -> bytes:
         legend = ax.legend(facecolor='#1a1a2e', edgecolor='#3a3a5a',
                            labelcolor='#c0c0d0', fontsize=9)
 
-    # Пределы по y — берём из данных если заданы, иначе авто
-    if y_min_data is not None and y_max_data is not None:
-        ax.set_ylim(y_min_data, y_max_data)
-    else:
-        all_y = [y for y in ys if y is not None]
-        if all_y:
-            combined = np.concatenate(all_y)
-            finite = combined[np.isfinite(combined)]
-            if len(finite):
-                p5, p95 = np.percentile(finite, 5), np.percentile(finite, 95)
-                margin = (p95 - p5) * 0.2 or 1
+    # Пределы по y
+    all_y_vals = [y for y in ys if y is not None]
+    if all_y_vals:
+        combined_y = np.concatenate(all_y_vals)
+        finite_y = combined_y[np.isfinite(combined_y)]
+        if len(finite_y):
+            # Всегда считаем реальный диапазон через перцентили (5–95%) — отрезаем выбросы
+            p5, p95 = np.percentile(finite_y, 5), np.percentile(finite_y, 95)
+            spread = p95 - p5 or 2
+            margin = spread * 0.2
+
+            if y_min_data is not None and y_max_data is not None:
+                # GPT дал диапазон — используем, но только если он разумный
+                # (не шире чем 3× реального разброса данных)
+                gpt_spread = y_max_data - y_min_data
+                if gpt_spread < spread * 3:
+                    ax.set_ylim(y_min_data, y_max_data)
+                else:
+                    # GPT ошибся с диапазоном — берём авто
+                    ax.set_ylim(p5 - margin, p95 + margin)
+            else:
                 ax.set_ylim(p5 - margin, p95 + margin)
 
     # Авто-обрезка: если GPT задал слишком широкий диапазон,
@@ -479,7 +489,7 @@ async def send_typing_while(message: Message, coro):
     return result
 
 
-async def generate_with_retry(messages: list, retries: int = 3, timeout: int = 60):
+async def generate_with_retry(messages: list, retries: int = 1, timeout: int = 50):
     for i in range(retries):
         try:
             response = await asyncio.wait_for(
